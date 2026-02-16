@@ -2,7 +2,6 @@ flask
 flask-socketio
 python-dotenv
 openai
-pyOpenSSL
 websockets
 gunicorn
 gevent
