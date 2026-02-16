@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Interview Copilot</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #000000; color: #ffffff; font-family: sans-serif; }
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+        .btn-action { touch-action: manipulation; }
+        .speaker-0 { color: #60a5fa; } 
+        .speaker-1 { color: #f472b6; } 
+        .tab-active { border-bottom: 2px solid #10b981; color: #10b981; }
+        .tab-inactive { color: #6b7280; }
+        .locked-border { border: 2px solid #ef4444; }
+        .interim { color: #9ca3af; font-style: italic; } /* Gray for interim text */
+    </style>
+</head>
+<body class="h-screen flex flex-col p-4">
+
+    <!-- Mode Switcher -->
+    <div class="flex justify-around mb-4 border-b border-gray-800">
+        <button onclick="setMode('manual')" id="tab-manual" class="pb-2 w-1/2 font-bold text-center tab-active">MANUAL</button>
+        <button onclick="setMode('auto')" id="tab-auto" class="pb-2 w-1/2 font-bold text-center tab-inactive">AUTO-PILOT</button>
+    </div>
+
+    <!-- Status Bar -->
+    <div class="flex justify-between items-center mb-2">
+        <div class="flex flex-col">
+            <div id="status-indicator" class="text-xs font-mono text-gray-400">Ready</div>
+            <div id="debug-info" class="text-[10px] font-mono text-gray-600">Chunks: 0</div>
+        </div>
+        <div id="connection-dot" class="w-3 h-3 rounded-full bg-red-500"></div>
+    </div>
+
+    <!-- Context Toggle -->
+    <details class="mb-2 border border-gray-800 rounded bg-gray-900" open>
+        <summary class="p-2 text-xs text-gray-400 font-bold cursor-pointer">CONTEXT / RESUME</summary>
+        <textarea id="context-input" oninput="syncContext()" class="w-full h-24 bg-gray-800 text-white text-sm p-2 outline-none" placeholder="Paste resume here..."></textarea>
+    </details>
+
+    <!-- Transcript Area -->
+    <div class="h-1/4 overflow-y-auto border-b border-gray-800 mb-2 p-2 text-gray-400 text-sm leading-snug" id="transcript-box">
+        <p class="italic opacity-50">Conversation will appear here...</p>
+    </div>
+
+    <!-- Answer Area -->
+    <div class="flex-grow overflow-y-auto bg-gray-900 rounded-lg p-4 mb-4 border border-gray-700 shadow-lg shadow-emerald-900/20 transition-all duration-300" id="answer-box">
+        <p class="text-gray-500 text-center mt-10">Select a mode to begin.</p>
+    </div>
+
+    <!-- CONTROLS -->
+    <div class="h-20">
+        <div id="controls-manual" class="grid grid-cols-2 gap-2 h-full">
+            <button id="btn-manual-mic" onclick="toggleMic()" class="bg-gray-700 rounded-lg flex flex-col items-center justify-center btn-action">
+                <span class="text-2xl">🎙️</span>
+                <span class="text-xs font-bold mt-1">LISTEN</span>
+            </button>
+            <button onclick="manualGetAnswer()" class="bg-emerald-600 active:bg-emerald-500 text-white rounded-lg flex flex-col items-center justify-center btn-action shadow-lg">
+                <span class="text-2xl">⚡</span>
+                <span class="text-xs font-bold mt-1">GENERATE ANSWER</span>
+            </button>
+        </div>
+
+        <div id="controls-auto" class="grid grid-cols-4 gap-2 h-full hidden">
+            <button id="btn-auto-mic" onclick="toggleMic()" class="col-span-1 bg-gray-700 rounded-lg flex items-center justify-center text-2xl btn-action">
+                🎙️
+            </button>
+            <button onclick="forceAnswer()" class="col-span-3 bg-blue-600 active:bg-blue-500 text-white font-bold text-xl rounded-lg shadow-lg btn-action">
+                FORCE ANSWER
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let mediaRecorder;
+        let isRecording = false;
+        let wakeLock = null;
+        let chunkCount = 0;
+        let currentMode = 'manual';
+        let currentInterimElement = null; // Track the temporary text element
+
+        async function requestWakeLock() {
+            try { wakeLock = await navigator.wakeLock.request('screen'); } catch (err) {}
+        }
+
+        function syncContext() {
+            const context = document.getElementById('context-input').value;
+            socket.emit('update_context', { context: context });
+        }
+
+        function setMode(mode) {
+            currentMode = mode;
+            socket.emit('set_mode', { mode: mode });
+
+            if (mode === 'manual') {
+                document.getElementById('tab-manual').className = "pb-2 w-1/2 font-bold text-center tab-active";
+                document.getElementById('tab-auto').className = "pb-2 w-1/2 font-bold text-center tab-inactive";
+                document.getElementById('controls-manual').classList.remove('hidden');
+                document.getElementById('controls-auto').classList.add('hidden');
+                document.getElementById('answer-box').innerHTML = '<p class="text-gray-500 text-center mt-10">Manual Mode.<br>Tap Listen when they speak.<br>Tap Generate to answer.</p>';
+                document.getElementById('answer-box').classList.remove('locked-border');
+            } else {
+                document.getElementById('tab-manual').className = "pb-2 w-1/2 font-bold text-center tab-inactive";
+                document.getElementById('tab-auto').className = "pb-2 w-1/2 font-bold text-center tab-active";
+                document.getElementById('controls-manual').classList.add('hidden');
+                document.getElementById('controls-auto').classList.remove('hidden');
+                document.getElementById('answer-box').innerHTML = '<p class="text-gray-500 text-center mt-10">Auto-Pilot Mode.<br>Listening for questions...</p>';
+            }
+            if (isRecording) toggleMic(); 
+        }
+
+        socket.on('connect', () => {
+            document.getElementById('connection-dot').className = "w-3 h-3 rounded-full bg-green-500 shadow-[0_0_10px_#22c55e]";
+            document.getElementById('status-indicator').innerText = "Connected";
+            syncContext();
+        });
+
+        socket.on('disconnect', () => {
+            document.getElementById('connection-dot').className = "w-3 h-3 rounded-full bg-red-500";
+        });
+
+        socket.on('status_update', (data) => {
+            const statusText = document.getElementById('status-indicator');
+            const answerBox = document.getElementById('answer-box');
+            statusText.innerText = data.status;
+            
+            if (data.status.includes("Locked")) {
+                answerBox.classList.add('locked-border');
+                statusText.classList.add('text-red-400');
+            } else if (data.status.includes("Listening")) {
+                answerBox.classList.remove('locked-border');
+                statusText.classList.remove('text-red-400');
+            }
+        });
+
+        socket.on('transcript_update', (data) => {
+            const box = document.getElementById('transcript-box');
+            const speakerClass = data.speaker === 0 ? 'speaker-0' : 'speaker-1';
+            
+            // If we have an existing interim element, remove it
+            if (currentInterimElement) {
+                currentInterimElement.remove();
+                currentInterimElement = null;
+            }
+
+            if (data.is_final) {
+                // Final sentence: Add permanently
+                const p = document.createElement('div');
+                p.innerHTML = `<span class="${speakerClass} font-bold">S${data.speaker}:</span> <span class="text-white">${data.text}</span>`;
+                p.className = "mb-1";
+                box.appendChild(p);
+            } else {
+                // Interim sentence: Add temporarily
+                const p = document.createElement('div');
+                p.innerHTML = `<span class="${speakerClass} font-bold">S${data.speaker}:</span> <span class="interim">${data.text}</span>`;
+                p.className = "mb-1";
+                box.appendChild(p);
+                currentInterimElement = p; // Save reference
+            }
+            box.scrollTop = box.scrollHeight;
+        });
+
+        socket.on('ai_response', (data) => {
+            const box = document.getElementById('answer-box');
+            let formatted = data.answer.replace(/- /g, '<br>• ');
+            formatted = formatted.replace(/\n/g, '<br>');
+            box.innerHTML = `<div class="text-white text-lg font-medium leading-relaxed animate-fade-in">${formatted}</div>`;
+        });
+
+        function getSupportedMimeType() {
+            const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac'];
+            for (const type of types) {
+                if (MediaRecorder.isTypeSupported(type)) return type;
+            }
+            return ''; 
+        }
+
+        async function toggleMic() {
+            const btn = currentMode === 'manual' ? document.getElementById('btn-manual-mic') : document.getElementById('btn-auto-mic');
+            const debugEl = document.getElementById('debug-info');
+            
+            if (!isRecording) {
+                try {
+                    requestWakeLock();
+                    syncContext();
+
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: {
+                            echoCancellation: false, 
+                            noiseSuppression: false,
+                            autoGainControl: true,
+                            channelCount: 1
+                        } 
+                    });
+                    
+                    const mimeType = getSupportedMimeType();
+                    const options = mimeType ? { mimeType, audioBitsPerSecond: 128000 } : {};
+                    
+                    try { mediaRecorder = new MediaRecorder(stream, options); } 
+                    catch (e) { mediaRecorder = new MediaRecorder(stream); }
+
+                    chunkCount = 0;
+                    mediaRecorder.ondataavailable = event => {
+                        if (event.data.size > 0) {
+                            chunkCount++;
+                            debugEl.innerText = `Chunks: ${chunkCount}`;
+                            socket.emit('binary_audio', event.data);
+                        }
+                    };
+
+                    mediaRecorder.start(250); 
+                    socket.emit('start_recording');
+                    isRecording = true;
+                    
+                    if(currentMode === 'manual') {
+                        btn.classList.remove('bg-gray-700');
+                        btn.classList.add('bg-red-600', 'animate-pulse');
+                        btn.querySelector('span:nth-child(2)').innerText = "STOP";
+                    } else {
+                        btn.classList.remove('bg-gray-700');
+                        btn.classList.add('bg-red-600', 'animate-pulse');
+                        btn.innerHTML = "⬛";
+                    }
+                    
+                } catch (err) {
+                    alert("Mic Error: " + err.message);
+                }
+            } else {
+                if(mediaRecorder) mediaRecorder.stop();
+                socket.emit('stop_recording');
+                isRecording = false;
+                
+                if(currentMode === 'manual') {
+                    btn.classList.add('bg-gray-700');
+                    btn.classList.remove('bg-red-600', 'animate-pulse');
+                    btn.querySelector('span:nth-child(2)').innerText = "LISTEN";
+                } else {
+                    btn.classList.add('bg-gray-700');
+                    btn.classList.remove('bg-red-600', 'animate-pulse');
+                    btn.innerHTML = "🎙️";
+                }
+                
+                if(wakeLock) wakeLock.release();
+            }
+        }
+
+        function manualGetAnswer() {
+            document.getElementById('answer-box').innerHTML = '<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div></div>';
+            socket.emit('manual_get_answer', {});
+        }
+
+        function forceAnswer() {
+            document.getElementById('answer-box').innerHTML = '<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div></div>';
+            socket.emit('force_answer', {});
+        }
+    </script>
+</body>
+</html>
