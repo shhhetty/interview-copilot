@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: interview-copilot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker --bind 0.0.0.0:$PORT app:app
+    envVars:
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
