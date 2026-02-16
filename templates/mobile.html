@@ -1,29 +1,169 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Interview Copilot</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Highlight.js for code blocks -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <style>
-        body { background-color: #000000; color: #ffffff; font-family: sans-serif; }
-        ::-webkit-scrollbar { width: 0px; background: transparent; }
-        .btn-action { touch-action: manipulation; }
-        .speaker-0 { color: #60a5fa; } 
-        .speaker-1 { color: #f472b6; } 
-        .tab-active { border-bottom: 2px solid #10b981; color: #10b981; }
-        .tab-inactive { color: #6b7280; }
-        .locked-border { border: 2px solid #ef4444; }
-        .interim { color: #9ca3af; font-style: italic; } /* Gray for interim text */
+        body {
+            background-color: #000000;
+            color: #ffffff;
+            font-family: sans-serif;
+        }
+
+        ::-webkit-scrollbar {
+            width: 0px;
+            background: transparent;
+        }
+
+        .btn-action {
+            touch-action: manipulation;
+        }
+
+        .speaker-0 {
+            color: #60a5fa;
+        }
+
+        .speaker-1 {
+            color: #f472b6;
+        }
+
+        .tab-active {
+            border-bottom: 2px solid #10b981;
+            color: #10b981;
+        }
+
+        .tab-inactive {
+            color: #6b7280;
+        }
+
+        .locked-border {
+            border: 2px solid #ef4444;
+        }
+
+        .interim {
+            color: #9ca3af;
+            font-style: italic;
+        }
+
+        /* Code block styling */
+        .code-wrapper {
+            position: relative;
+            margin: 8px 0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .code-wrapper pre {
+            margin: 0;
+            padding: 12px;
+            padding-top: 32px;
+            overflow-x: auto;
+            font-size: 13px;
+            line-height: 1.4;
+            background: #161b22 !important;
+            border-radius: 8px;
+        }
+
+        .code-wrapper code {
+            font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .copy-btn {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            background: #30363d;
+            color: #c9d1d9;
+            border: 1px solid #484f58;
+            border-radius: 6px;
+            padding: 3px 10px;
+            font-size: 11px;
+            cursor: pointer;
+            z-index: 10;
+            transition: background 0.2s;
+        }
+
+        .copy-btn:active {
+            background: #238636;
+        }
+
+        .lang-label {
+            position: absolute;
+            top: 7px;
+            left: 10px;
+            font-size: 10px;
+            color: #8b949e;
+            font-family: monospace;
+            text-transform: uppercase;
+        }
+
+        /* Streaming cursor */
+        .streaming-cursor::after {
+            content: '▊';
+            animation: blink 0.8s infinite;
+            color: #10b981;
+        }
+
+        @keyframes blink {
+
+            0%,
+            50% {
+                opacity: 1;
+            }
+
+            51%,
+            100% {
+                opacity: 0;
+            }
+        }
+
+        /* Snap badge */
+        .snap-badge {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            background: #ef4444;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            font-size: 11px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
+        }
+
+        .snap-bar {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            padding: 6px 8px;
+            background: #1e1028;
+            border: 1px solid #7c3aed;
+            border-radius: 8px;
+            margin-bottom: 6px;
+        }
     </style>
 </head>
+
 <body class="h-screen flex flex-col p-4">
 
     <!-- Mode Switcher -->
     <div class="flex justify-around mb-4 border-b border-gray-800">
-        <button onclick="setMode('manual')" id="tab-manual" class="pb-2 w-1/2 font-bold text-center tab-active">MANUAL</button>
-        <button onclick="setMode('auto')" id="tab-auto" class="pb-2 w-1/2 font-bold text-center tab-inactive">AUTO-PILOT</button>
+        <button onclick="setMode('manual')" id="tab-manual"
+            class="pb-2 w-1/2 font-bold text-center tab-active">MANUAL</button>
+        <button onclick="setMode('auto')" id="tab-auto"
+            class="pb-2 w-1/2 font-bold text-center tab-inactive">AUTO-PILOT</button>
     </div>
 
     <!-- Status Bar -->
@@ -38,38 +178,71 @@
     <!-- Context Toggle -->
     <details class="mb-2 border border-gray-800 rounded bg-gray-900" open>
         <summary class="p-2 text-xs text-gray-400 font-bold cursor-pointer">CONTEXT / RESUME</summary>
-        <textarea id="context-input" oninput="syncContext()" class="w-full h-24 bg-gray-800 text-white text-sm p-2 outline-none" placeholder="Paste resume here..."></textarea>
+        <textarea id="context-input" oninput="syncContext()"
+            class="w-full h-24 bg-gray-800 text-white text-sm p-2 outline-none"
+            placeholder="Paste resume here..."></textarea>
     </details>
 
     <!-- Transcript Area -->
-    <div class="h-1/4 overflow-y-auto border-b border-gray-800 mb-2 p-2 text-gray-400 text-sm leading-snug" id="transcript-box">
+    <div class="h-1/4 overflow-y-auto border-b border-gray-800 mb-2 p-2 text-gray-400 text-sm leading-snug"
+        id="transcript-box">
         <p class="italic opacity-50">Conversation will appear here...</p>
     </div>
 
     <!-- Answer Area -->
-    <div class="flex-grow overflow-y-auto bg-gray-900 rounded-lg p-4 mb-4 border border-gray-700 shadow-lg shadow-emerald-900/20 transition-all duration-300" id="answer-box">
+    <div class="flex-grow overflow-y-auto bg-gray-900 rounded-lg p-4 mb-4 border border-gray-700 shadow-lg shadow-emerald-900/20 transition-all duration-300"
+        id="answer-box">
         <p class="text-gray-500 text-center mt-10">Select a mode to begin.</p>
+    </div>
+
+    <!-- Hidden file input for image capture -->
+    <input type="file" id="image-input" accept="image/*" capture="environment" class="hidden">
+
+    <!-- Snap Queue Bar (hidden by default) -->
+    <div id="snap-bar" class="snap-bar hidden">
+        <span class="text-purple-400 text-xs font-bold" id="snap-count">0 snaps</span>
+        <div class="flex-grow"></div>
+        <button onclick="solveSnaps()"
+            class="bg-purple-600 active:bg-purple-500 text-white text-xs font-bold px-3 py-1.5 rounded-md">✨
+            SOLVE</button>
+        <button onclick="clearSnaps()" class="bg-gray-700 text-gray-300 text-xs font-bold px-3 py-1.5 rounded-md">✕
+            CLEAR</button>
     </div>
 
     <!-- CONTROLS -->
     <div class="h-20">
-        <div id="controls-manual" class="grid grid-cols-2 gap-2 h-full">
-            <button id="btn-manual-mic" onclick="toggleMic()" class="bg-gray-700 rounded-lg flex flex-col items-center justify-center btn-action">
+        <div id="controls-manual" class="grid grid-cols-3 gap-2 h-full">
+            <button id="btn-manual-mic" onclick="toggleMic()"
+                class="bg-gray-700 rounded-lg flex flex-col items-center justify-center btn-action">
                 <span class="text-2xl">🎙️</span>
                 <span class="text-xs font-bold mt-1">LISTEN</span>
             </button>
-            <button onclick="manualGetAnswer()" class="bg-emerald-600 active:bg-emerald-500 text-white rounded-lg flex flex-col items-center justify-center btn-action shadow-lg">
+            <button onclick="manualGetAnswer()"
+                class="bg-emerald-600 active:bg-emerald-500 text-white rounded-lg flex flex-col items-center justify-center btn-action shadow-lg">
                 <span class="text-2xl">⚡</span>
-                <span class="text-xs font-bold mt-1">GENERATE ANSWER</span>
+                <span class="text-xs font-bold mt-1">ANSWER</span>
+            </button>
+            <button onclick="captureImage()"
+                class="relative bg-purple-600 active:bg-purple-500 text-white rounded-lg flex flex-col items-center justify-center btn-action shadow-lg">
+                <span id="snap-badge-manual" class="snap-badge hidden">0</span>
+                <span class="text-2xl">📷</span>
+                <span class="text-xs font-bold mt-1">SNAP</span>
             </button>
         </div>
 
-        <div id="controls-auto" class="grid grid-cols-4 gap-2 h-full hidden">
-            <button id="btn-auto-mic" onclick="toggleMic()" class="col-span-1 bg-gray-700 rounded-lg flex items-center justify-center text-2xl btn-action">
+        <div id="controls-auto" class="grid grid-cols-5 gap-2 h-full hidden">
+            <button id="btn-auto-mic" onclick="toggleMic()"
+                class="col-span-1 bg-gray-700 rounded-lg flex items-center justify-center text-2xl btn-action">
                 🎙️
             </button>
-            <button onclick="forceAnswer()" class="col-span-3 bg-blue-600 active:bg-blue-500 text-white font-bold text-xl rounded-lg shadow-lg btn-action">
+            <button onclick="forceAnswer()"
+                class="col-span-3 bg-blue-600 active:bg-blue-500 text-white font-bold text-lg rounded-lg shadow-lg btn-action">
                 FORCE ANSWER
+            </button>
+            <button onclick="captureImage()"
+                class="relative col-span-1 bg-purple-600 active:bg-purple-500 rounded-lg flex items-center justify-center text-2xl btn-action">
+                <span id="snap-badge-auto" class="snap-badge hidden">0</span>
+                📷
             </button>
         </div>
     </div>
@@ -81,10 +254,13 @@
         let wakeLock = null;
         let chunkCount = 0;
         let currentMode = 'manual';
-        let currentInterimElement = null; // Track the temporary text element
+        let currentInterimElement = null;
+        let streamingRaw = '';
+        let isStreaming = false;
+        let latestInterimText = '';  // Track latest interim for fast answer requests
 
         async function requestWakeLock() {
-            try { wakeLock = await navigator.wakeLock.request('screen'); } catch (err) {}
+            try { wakeLock = await navigator.wakeLock.request('screen'); } catch (err) { }
         }
 
         function syncContext() {
@@ -92,7 +268,165 @@
             socket.emit('update_context', { context: context });
         }
 
+        // --- RENDER ANSWER WITH CODE BLOCKS ---
+        function renderAnswer(raw) {
+            // Parse markdown code blocks: ```lang\ncode\n```
+            const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+            let result = '';
+            let lastIndex = 0;
+            let match;
+            let blockId = 0;
+
+            while ((match = codeBlockRegex.exec(raw)) !== null) {
+                // Text before this code block
+                const textBefore = raw.substring(lastIndex, match.index);
+                result += formatText(textBefore);
+
+                const lang = match[1] || 'plaintext';
+                const code = match[2].trim();
+                const id = `code-block-${Date.now()}-${blockId++}`;
+
+                // Highlight.js
+                let highlighted;
+                try {
+                    highlighted = hljs.highlight(code, { language: lang }).value;
+                } catch {
+                    highlighted = hljs.highlightAuto(code).value;
+                }
+
+                result += `
+                    <div class="code-wrapper">
+                        <span class="lang-label">${lang}</span>
+                        <button class="copy-btn" onclick="copyCode('${id}')">📋 Copy</button>
+                        <pre><code id="${id}" class="hljs language-${lang}">${highlighted}</code></pre>
+                    </div>`;
+
+                lastIndex = match.index + match[0].length;
+            }
+
+            // Remaining text after last code block
+            result += formatText(raw.substring(lastIndex));
+            return `<div class="text-white text-base leading-relaxed">${result}</div>`;
+        }
+
+        function formatText(text) {
+            if (!text.trim()) return '';
+            let formatted = text
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/`([^`]+)`/g, '<code class="bg-gray-800 px-1 py-0.5 rounded text-sm text-emerald-400">$1</code>')
+                .replace(/^- /gm, '• ')
+                .replace(/\n/g, '<br>');
+            return `<span>${formatted}</span>`;
+        }
+
+        function copyCode(id) {
+            const codeEl = document.getElementById(id);
+            const text = codeEl.innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = codeEl.closest('.code-wrapper').querySelector('.copy-btn');
+                btn.innerText = '✅ Copied';
+                setTimeout(() => { btn.innerText = '📋 Copy'; }, 1500);
+            });
+        }
+
+        // --- MULTI-IMAGE CAPTURE ---
+        let snapQueue = [];
+
+        function captureImage() {
+            document.getElementById('image-input').click();
+        }
+
+        function updateSnapUI() {
+            const count = snapQueue.length;
+            const bar = document.getElementById('snap-bar');
+            const countEl = document.getElementById('snap-count');
+            const badgeManual = document.getElementById('snap-badge-manual');
+            const badgeAuto = document.getElementById('snap-badge-auto');
+
+            if (count > 0) {
+                bar.classList.remove('hidden');
+                countEl.innerText = `${count} snap${count > 1 ? 's' : ''} queued`;
+                badgeManual.classList.remove('hidden');
+                badgeManual.innerText = count;
+                badgeAuto.classList.remove('hidden');
+                badgeAuto.innerText = count;
+            } else {
+                bar.classList.add('hidden');
+                badgeManual.classList.add('hidden');
+                badgeAuto.classList.add('hidden');
+            }
+        }
+
+        function clearSnaps() {
+            snapQueue = [];
+            updateSnapUI();
+        }
+
+        function solveSnaps() {
+            if (snapQueue.length === 0) return;
+            const box = document.getElementById('answer-box');
+            box.innerHTML = `<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-400"></div><span class="ml-3 text-purple-400">Analyzing ${snapQueue.length} image(s)...</span></div>`;
+            socket.emit('process_image', { images: snapQueue });
+            snapQueue = [];
+            updateSnapUI();
+        }
+
+        document.getElementById('image-input').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = () => {
+                const b64 = reader.result.split(',')[1];
+                snapQueue.push(b64);
+                updateSnapUI();
+                // If only 1 image, auto-solve immediately (quick single snap)
+                // If user wants multi, they tap SNAP again before SOLVE
+            };
+            reader.readAsDataURL(file);
+            e.target.value = '';
+        });
+
+        // --- STREAMING TOKENS ---
+        socket.on('ai_token', (data) => {
+            const box = document.getElementById('answer-box');
+            if (!isStreaming) {
+                isStreaming = true;
+                streamingRaw = '';
+                box.innerHTML = '';
+            }
+            streamingRaw += data.token;
+            box.innerHTML = renderAnswer(streamingRaw) + '<span class="streaming-cursor"></span>';
+            box.scrollTop = box.scrollHeight;
+        });
+
+        socket.on('ai_stream_end', (data) => {
+            const box = document.getElementById('answer-box');
+            isStreaming = false;
+            streamingRaw = '';
+            box.innerHTML = renderAnswer(data.full);
+            box.scrollTop = box.scrollHeight;
+        });
+
+        // --- MODE SWITCHER ---
         function setMode(mode) {
+            // Stop recording and reset BOTH mic buttons before switching
+            if (isRecording) {
+                if (mediaRecorder) mediaRecorder.stop();
+                socket.emit('stop_recording');
+                isRecording = false;
+                if (wakeLock) wakeLock.release();
+            }
+            // Reset both buttons to default state
+            const manualBtn = document.getElementById('btn-manual-mic');
+            const autoBtn = document.getElementById('btn-auto-mic');
+            manualBtn.classList.add('bg-gray-700');
+            manualBtn.classList.remove('bg-red-600', 'animate-pulse');
+            manualBtn.querySelector('span:nth-child(2)').innerText = "LISTEN";
+            autoBtn.classList.add('bg-gray-700');
+            autoBtn.classList.remove('bg-red-600', 'animate-pulse');
+            autoBtn.innerHTML = "🎙️";
+
             currentMode = mode;
             socket.emit('set_mode', { mode: mode });
 
@@ -110,9 +444,9 @@
                 document.getElementById('controls-auto').classList.remove('hidden');
                 document.getElementById('answer-box').innerHTML = '<p class="text-gray-500 text-center mt-10">Auto-Pilot Mode.<br>Listening for questions...</p>';
             }
-            if (isRecording) toggleMic(); 
         }
 
+        // --- SOCKET EVENTS ---
         socket.on('connect', () => {
             document.getElementById('connection-dot').className = "w-3 h-3 rounded-full bg-green-500 shadow-[0_0_10px_#22c55e]";
             document.getElementById('status-indicator').innerText = "Connected";
@@ -127,7 +461,7 @@
             const statusText = document.getElementById('status-indicator');
             const answerBox = document.getElementById('answer-box');
             statusText.innerText = data.status;
-            
+
             if (data.status.includes("Locked")) {
                 answerBox.classList.add('locked-border');
                 statusText.classList.add('text-red-400');
@@ -140,67 +474,66 @@
         socket.on('transcript_update', (data) => {
             const box = document.getElementById('transcript-box');
             const speakerClass = data.speaker === 0 ? 'speaker-0' : 'speaker-1';
-            
-            // If we have an existing interim element, remove it
+
             if (currentInterimElement) {
                 currentInterimElement.remove();
                 currentInterimElement = null;
             }
 
             if (data.is_final) {
-                // Final sentence: Add permanently
                 const p = document.createElement('div');
                 p.innerHTML = `<span class="${speakerClass} font-bold">S${data.speaker}:</span> <span class="text-white">${data.text}</span>`;
                 p.className = "mb-1";
                 box.appendChild(p);
+                latestInterimText = '';  // Clear interim since it's now final
             } else {
-                // Interim sentence: Add temporarily
                 const p = document.createElement('div');
                 p.innerHTML = `<span class="${speakerClass} font-bold">S${data.speaker}:</span> <span class="interim">${data.text}</span>`;
                 p.className = "mb-1";
                 box.appendChild(p);
-                currentInterimElement = p; // Save reference
+                currentInterimElement = p;
+                latestInterimText = `[Speaker ${data.speaker}]: ${data.text}`;  // Save for fast answer
             }
             box.scrollTop = box.scrollHeight;
         });
 
+        // --- LEGACY HANDLER (fallback for non-streamed responses) ---
         socket.on('ai_response', (data) => {
             const box = document.getElementById('answer-box');
-            let formatted = data.answer.replace(/- /g, '<br>• ');
-            formatted = formatted.replace(/\n/g, '<br>');
-            box.innerHTML = `<div class="text-white text-lg font-medium leading-relaxed animate-fade-in">${formatted}</div>`;
+            box.innerHTML = renderAnswer(data.answer);
         });
 
+        // --- MIC ---
         function getSupportedMimeType() {
             const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac'];
             for (const type of types) {
                 if (MediaRecorder.isTypeSupported(type)) return type;
             }
-            return ''; 
+            return '';
         }
 
         async function toggleMic() {
             const btn = currentMode === 'manual' ? document.getElementById('btn-manual-mic') : document.getElementById('btn-auto-mic');
             const debugEl = document.getElementById('debug-info');
-            
+
             if (!isRecording) {
                 try {
                     requestWakeLock();
                     syncContext();
 
-                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                    const stream = await navigator.mediaDevices.getUserMedia({
                         audio: {
-                            echoCancellation: false, 
+                            echoCancellation: false,
                             noiseSuppression: false,
                             autoGainControl: true,
                             channelCount: 1
-                        } 
+                        }
                     });
-                    
+
                     const mimeType = getSupportedMimeType();
                     const options = mimeType ? { mimeType, audioBitsPerSecond: 128000 } : {};
-                    
-                    try { mediaRecorder = new MediaRecorder(stream, options); } 
+
+                    try { mediaRecorder = new MediaRecorder(stream, options); }
                     catch (e) { mediaRecorder = new MediaRecorder(stream); }
 
                     chunkCount = 0;
@@ -212,11 +545,11 @@
                         }
                     };
 
-                    mediaRecorder.start(250); 
+                    mediaRecorder.start(100);
                     socket.emit('start_recording');
                     isRecording = true;
-                    
-                    if(currentMode === 'manual') {
+
+                    if (currentMode === 'manual') {
                         btn.classList.remove('bg-gray-700');
                         btn.classList.add('bg-red-600', 'animate-pulse');
                         btn.querySelector('span:nth-child(2)').innerText = "STOP";
@@ -225,16 +558,16 @@
                         btn.classList.add('bg-red-600', 'animate-pulse');
                         btn.innerHTML = "⬛";
                     }
-                    
+
                 } catch (err) {
                     alert("Mic Error: " + err.message);
                 }
             } else {
-                if(mediaRecorder) mediaRecorder.stop();
+                if (mediaRecorder) mediaRecorder.stop();
                 socket.emit('stop_recording');
                 isRecording = false;
-                
-                if(currentMode === 'manual') {
+
+                if (currentMode === 'manual') {
                     btn.classList.add('bg-gray-700');
                     btn.classList.remove('bg-red-600', 'animate-pulse');
                     btn.querySelector('span:nth-child(2)').innerText = "LISTEN";
@@ -243,20 +576,21 @@
                     btn.classList.remove('bg-red-600', 'animate-pulse');
                     btn.innerHTML = "🎙️";
                 }
-                
-                if(wakeLock) wakeLock.release();
+
+                if (wakeLock) wakeLock.release();
             }
         }
 
         function manualGetAnswer() {
             document.getElementById('answer-box').innerHTML = '<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div></div>';
-            socket.emit('manual_get_answer', {});
+            socket.emit('manual_get_answer', { interim: latestInterimText });
         }
 
         function forceAnswer() {
             document.getElementById('answer-box').innerHTML = '<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div></div>';
-            socket.emit('force_answer', {});
+            socket.emit('force_answer', { interim: latestInterimText });
         }
     </script>
 </body>
+
 </html>
