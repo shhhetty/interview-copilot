@@ -1,8 +1,7 @@
 flask
 flask-socketio
+simple-websocket
 python-dotenv
 openai
 websockets
 gunicorn
-gevent
-gevent-websocket
