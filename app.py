@@ -1,17 +1,14 @@
-from gevent import monkey
-monkey.patch_all()
-
 import os
 import threading
 import queue
 import json
+import base64
 import logging
 import time
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
 from openai import OpenAI
-from OpenSSL import crypto 
 from websockets.sync.client import connect
 from websockets.exceptions import ConnectionClosedOK
 
@@ -23,8 +20,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'interview_helper_secret'
 
-# Threading mode
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+# threading mode works locally AND under gunicorn's GeventWebSocketWorker
+# (gunicorn monkey-patches threading → green threads automatically)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -37,7 +35,13 @@ current_mode = "manual"
 # Locking Logic
 ai_response_locked = False
 
-def get_ai_decision_and_answer(context, transcript_list, force=False):
+CODE_INSTRUCTION = (
+    "\nWhen providing code, ALWAYS wrap it in triple backticks with the language name, "
+    "e.g. ```python\\ncode\\n```. Keep explanations outside code blocks concise."
+)
+
+def stream_ai_answer(context, transcript_list, force=False, sid=None):
+    """Stream GPT-4 response token-by-token via Socket.IO."""
     try:
         formatted_transcript = ""
         for entry in transcript_list[-15:]:
@@ -47,38 +51,98 @@ def get_ai_decision_and_answer(context, transcript_list, force=False):
             system_prompt = (
                 "You are an expert interview assistant. The user has explicitly asked for an answer.\n"
                 "1. Ignore who spoke last. Look for the last QUESTION asked.\n"
-                "2. Provide a direct, high-impact answer (max 60 words)."
-                f"\n\nCANDIDATE CONTEXT:\n{context}"
+                "2. Provide a direct, high-impact answer (max 60 words for non-code, full solution for code questions)."
+                + CODE_INSTRUCTION
+                + f"\n\nCANDIDATE CONTEXT:\n{context}"
             )
         else:
             system_prompt = (
                 "You are a stealth interview assistant. Analyze the LIVE TRANSCRIPT.\n"
                 "1. Focus ONLY on what [Speaker 0] (The Interviewer) just said.\n"
                 "2. Did [Speaker 0] ask a question?\n"
-                "   - YES: Provide a concise answer (max 60 words).\n"
+                "   - YES: Provide a concise answer (max 60 words for non-code, full solution for code questions).\n"
                 "   - NO: Output exactly: [NO_ANSWER]\n"
                 "3. Ignore [Speaker 1] (The Candidate)."
-                f"\n\nCANDIDATE CONTEXT:\n{context}"
+                + CODE_INSTRUCTION
+                + f"\n\nCANDIDATE CONTEXT:\n{context}"
             )
 
         response = openai_client.chat.completions.create(
-            model="gpt-4-turbo", 
+            model="gpt-4.1-mini", 
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"LIVE TRANSCRIPT:\n{formatted_transcript}"}
             ],
             temperature=0.6,
+            stream=True,
         )
         
-        content = response.choices[0].message.content.strip()
+        full_content = ""
+        for chunk in response:
+            delta = chunk.choices[0].delta
+            token = delta.content if delta.content else ""
+            if token:
+                full_content += token
+                socketio.emit('ai_token', {'token': token}, to=sid)
         
-        if not force and "[NO_ANSWER]" in content:
+        # Signal stream end
+        socketio.emit('ai_stream_end', {'full': full_content}, to=sid)
+        
+        if not force and "[NO_ANSWER]" in full_content:
             return None
             
-        return content.replace("[ANSWER]", "").strip()
+        return full_content.replace("[ANSWER]", "").strip()
 
     except Exception as e:
         print(f"AI Error: {e}")
+        socketio.emit('ai_stream_end', {'full': f'Error: {e}'}, to=sid)
+        return None
+
+def stream_image_answer(images_b64, context, sid=None):
+    """Process one or more images via GPT-4 Vision and stream the response."""
+    try:
+        num_images = len(images_b64) if isinstance(images_b64, list) else 1
+        if not isinstance(images_b64, list):
+            images_b64 = [images_b64]
+
+        system_prompt = (
+            "You are an expert interview assistant. The user has shared screenshot(s) of a coding question.\n"
+            f"There are {num_images} image(s) — they may be parts of the SAME question. Combine them.\n"
+            "1. Extract the full question from ALL images.\n"
+            "2. Provide a clear, complete solution.\n"
+            "3. Use triple backtick code blocks with the language name for ALL code."
+            + f"\n\nCANDIDATE CONTEXT:\n{context}"
+        )
+
+        # Build content array with all images
+        content = [{"type": "text", "text": "Extract the coding question from these image(s) and provide a complete solution with code."}]
+        for img_b64 in images_b64:
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
+
+        response = openai_client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content}
+            ],
+            temperature=0.4,
+            stream=True,
+        )
+
+        full_content = ""
+        for chunk in response:
+            delta = chunk.choices[0].delta
+            token = delta.content if delta.content else ""
+            if token:
+                full_content += token
+                socketio.emit('ai_token', {'token': token}, to=sid)
+
+        socketio.emit('ai_stream_end', {'full': full_content}, to=sid)
+        return full_content
+
+    except Exception as e:
+        print(f"Vision AI Error: {e}")
+        socketio.emit('ai_stream_end', {'full': f'Error: {e}'}, to=sid)
         return None
 
 # --- DIRECT WEBSOCKET SERVICE ---
@@ -99,7 +163,6 @@ class DeepgramDirectService:
     def _run_connection(self):
         print("Initializing Deepgram...")
         
-        # URL: interim_results=true (Fixes visibility issue)
         url = (
             "wss://api.deepgram.com/v1/listen?"
             "model=nova-2"
@@ -107,7 +170,9 @@ class DeepgramDirectService:
             "&diarize=true"
             "&filler_words=false"
             "&punctuate=true"
-            "&interim_results=true" 
+            "&interim_results=true"
+            "&endpointing=200"
+            "&utterance_end_ms=1000"
         )
         
         headers = { "Authorization": f"Token {DEEPGRAM_API_KEY}" }
@@ -120,11 +185,19 @@ class DeepgramDirectService:
                 self.recv_thread = threading.Thread(target=self._recv_loop)
                 self.recv_thread.start()
 
+                last_keepalive = time.time()
                 while self.running:
                     try:
                         data = self.audio_queue.get(timeout=0.1)
                         websocket.send(data)
                     except queue.Empty:
+                        # Send keepalive to prevent Deepgram timeout
+                        if time.time() - last_keepalive > 8:
+                            try:
+                                websocket.send(json.dumps({"type": "KeepAlive"}))
+                                last_keepalive = time.time()
+                            except Exception:
+                                break
                         continue
                     except ConnectionClosedOK:
                         break 
@@ -147,7 +220,7 @@ class DeepgramDirectService:
                 message = self.ws.recv()
                 data = json.loads(message)
                 
-                if 'channel' in data:
+                if 'channel' in data and isinstance(data['channel'], dict):
                     alternatives = data['channel']['alternatives']
                     if alternatives:
                         alt = alternatives[0]
@@ -186,9 +259,11 @@ class DeepgramDirectService:
                                     if speaker == 0 and not ai_response_locked:
                                         threading.Thread(target=self._trigger_auto_ai).start()
 
+        except ConnectionClosedOK:
+            pass  # Normal close, not an error
         except Exception as e:
-            if self.running:
-                print(f"Receive Error: {e}") # Print error instead of silent fail
+            if self.running and "1000" not in str(e):
+                print(f"Receive Error: {e}")
 
     def _trigger_auto_ai(self):
         global user_context, ai_response_locked
@@ -196,11 +271,10 @@ class DeepgramDirectService:
         if not user_context: return
 
         print("Auto-Pilot: Analyzing...")
-        answer = get_ai_decision_and_answer(user_context, transcript_history, force=False)
+        answer = stream_ai_answer(user_context, transcript_history, force=False)
         
         if answer:
             print("Auto-Pilot: Answer Generated! LOCKING AI.")
-            socketio.emit('ai_response', {'answer': answer})
             ai_response_locked = True
             socketio.emit('status_update', {'status': 'Answer Locked'})
 
@@ -258,9 +332,21 @@ def handle_manual_answer(data):
     global user_context
     print(">>> MANUAL ANSWER REQUESTED <<<")
     emit('status_update', {'status': 'Generating Answer...'})
-    answer = get_ai_decision_and_answer(user_context, transcript_history, force=True)
+    sid = request.sid
+    # Include interim (not-yet-finalized) transcript if user clicked fast
+    interim = data.get('interim', '')
+    transcript_with_interim = list(transcript_history)
+    if interim:
+        # Parse interim format "[Speaker N]: text" into a dict matching transcript_history format
+        import re
+        m = re.match(r'\[Speaker (\d+)\]: (.+)', interim)
+        if m:
+            transcript_with_interim.append({'speaker': int(m.group(1)), 'text': m.group(2)})
+        else:
+            # Fallback: treat as speaker 0 text
+            transcript_with_interim.append({'speaker': 0, 'text': interim})
+    answer = stream_ai_answer(user_context, transcript_with_interim, force=True, sid=sid)
     if answer:
-        emit('ai_response', {'answer': answer})
         emit('status_update', {'status': 'Ready'})
 
 @socketio.on('force_answer')
@@ -269,29 +355,24 @@ def handle_force_answer(data):
     handle_manual_answer(data)
     ai_response_locked = True 
 
-# --- SSL CERTIFICATE GENERATOR ---
-def generate_self_signed_cert():
-    if not os.path.exists("cert.pem") or not os.path.exists("key.pem"):
-        print("Generating self-signed certificate...")
-        k = crypto.PKey()
-        k.generate_key(crypto.TYPE_RSA, 2048)
-        cert = crypto.X509()
-        cert.get_subject().C = "US"
-        cert.get_subject().ST = "State"
-        cert.get_subject().L = "City"
-        cert.get_subject().O = "Organization"
-        cert.get_subject().OU = "Organizational Unit"
-        cert.get_subject().CN = "localhost"
-        cert.set_serial_number(1000)
-        cert.gmtime_adj_notBefore(0)
-        cert.gmtime_adj_notAfter(10*365*24*60*60)
-        cert.set_issuer(cert.get_subject())
-        cert.set_pubkey(k)
-        cert.sign(k, 'sha256')
-        with open("cert.pem", "wt") as f:
-            f.write(crypto.dump_certificate(crypto.FILETYPE_PEM, cert).decode("utf-8"))
-        with open("key.pem", "wt") as f:
-            f.write(crypto.dump_privatekey(crypto.FILETYPE_PEM, k).decode("utf-8"))
+@socketio.on('process_image')
+def handle_image_process(data):
+    global user_context
+    sid = request.sid
+    # Support both single image and multiple images
+    images = data.get('images', [])
+    if not images:
+        single = data.get('image', '')
+        if single:
+            images = [single]
+    if not images:
+        emit('status_update', {'status': 'No image received'})
+        return
+    print(f">>> IMAGE PROCESSING REQUESTED ({len(images)} image(s)) <<<")
+    emit('status_update', {'status': f'Analyzing {len(images)} image(s)...'})
+    answer = stream_image_answer(images, user_context, sid=sid)
+    if answer:
+        emit('status_update', {'status': 'Ready'})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
