@@ -123,20 +123,34 @@ def stream_ai_answer(context, transcript_list, force=False, sid=None):
         return None
 
 
-def stream_image_answer(images_b64, context, sid=None):
+def stream_image_answer(images_b64, context, transcript_text='', sid=None):
     """Process one or more images via GPT-4 Vision and stream the response."""
     try:
         num_images = len(images_b64) if isinstance(images_b64, list) else 1
         if not isinstance(images_b64, list):
             images_b64 = [images_b64]
 
+        # Build transcript section if available
+        transcript_section = ""
+        if transcript_text:
+            transcript_section = (
+                "\n\nLIVE CONVERSATION TRANSCRIPT (from the interview):\n"
+                f"{transcript_text}\n\n"
+                "IMPORTANT: Check the transcript for any instructions about this question "
+                "(e.g. specific programming language, constraints, approach preferences). "
+                "If the interviewer or candidate mentioned how to solve it, follow those instructions."
+            )
+
         system_prompt = (
             "You are an expert interview assistant. The user has shared screenshot(s) of a coding question.\n"
             f"There are {num_images} image(s) — they may be parts of the SAME question. Combine them.\n"
             "1. Extract the full question from ALL images.\n"
-            "2. Provide a clear, complete solution.\n"
-            "3. Use triple backtick code blocks with the language name for ALL code."
+            "2. Check the conversation transcript (if provided) for any relevant context — "
+            "such as preferred programming language, specific constraints, or verbal instructions from the interviewer.\n"
+            "3. Provide a clear, complete solution following any instructions found in the transcript.\n"
+            "4. Use triple backtick code blocks with the language name for ALL code."
             + f"\n\nCANDIDATE CONTEXT:\n{context}"
+            + transcript_section
         )
 
         content = [{"type": "text", "text": "Extract the coding question from these image(s) and provide a complete solution with code."}]
@@ -437,17 +451,44 @@ def handle_manual_answer(data):
     print(f"[{sid[:8]}] >>> MANUAL ANSWER REQUESTED <<<")
     emit('status_update', {'status': 'Generating Answer...'})
 
-    # Include interim (not-yet-finalized) transcript if user clicked fast
-    interim = data.get('interim', '')
-    transcript_with_interim = list(session['transcript_history'])
-    if interim:
-        m = re.match(r'\[Speaker (\d+)\]: (.+)', interim)
-        if m:
-            transcript_with_interim.append({'speaker': int(m.group(1)), 'text': m.group(2)})
-        else:
-            transcript_with_interim.append({'speaker': 0, 'text': interim})
+    # Use the editable transcript from the frontend (includes user corrections)
+    frontend_transcript = data.get('transcript', '')
 
-    answer = stream_ai_answer(session['user_context'], transcript_with_interim, force=True, sid=sid)
+    if frontend_transcript:
+        # Frontend sent the user-editable transcript text — use it directly
+        # Parse it into the list format stream_ai_answer expects
+        transcript_list = []
+        for line in frontend_transcript.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r'S(\d+):\s*(.+)', line)
+            if m:
+                transcript_list.append({'speaker': int(m.group(1)), 'text': m.group(2)})
+            else:
+                # Non-speaker line (e.g. user typed something), treat as context
+                transcript_list.append({'speaker': 0, 'text': line})
+
+        # Append interim text if any
+        interim = data.get('interim', '')
+        if interim:
+            m2 = re.match(r'\[Speaker (\d+)\]: (.+)', interim)
+            if m2:
+                transcript_list.append({'speaker': int(m2.group(1)), 'text': m2.group(2)})
+            elif interim not in frontend_transcript:
+                transcript_list.append({'speaker': 0, 'text': interim})
+    else:
+        # Fallback: use server-side transcript history
+        transcript_list = list(session['transcript_history'])
+        interim = data.get('interim', '')
+        if interim:
+            m = re.match(r'\[Speaker (\d+)\]: (.+)', interim)
+            if m:
+                transcript_list.append({'speaker': int(m.group(1)), 'text': m.group(2)})
+            else:
+                transcript_list.append({'speaker': 0, 'text': interim})
+
+    answer = stream_ai_answer(session['user_context'], transcript_list, force=True, sid=sid)
     if answer:
         emit('status_update', {'status': 'Ready'})
 
@@ -479,7 +520,11 @@ def handle_image_process(data):
 
     print(f"[{sid[:8]}] >>> IMAGE PROCESSING ({len(images)} image(s)) <<<")
     emit('status_update', {'status': f'Analyzing {len(images)} image(s)...'})
-    answer = stream_image_answer(images, session['user_context'], sid=sid)
+
+    # Get transcript text from frontend (user-editable) for context-aware solving
+    transcript_text = data.get('transcript', '')
+
+    answer = stream_image_answer(images, session['user_context'], transcript_text=transcript_text, sid=sid)
     if answer:
         emit('status_update', {'status': 'Ready'})
 
