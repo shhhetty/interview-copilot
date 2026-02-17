@@ -153,6 +153,39 @@
             border-radius: 8px;
             margin-bottom: 6px;
         }
+
+        /* Resize handle */
+        .resize-handle {
+            height: 12px;
+            min-height: 12px;
+            cursor: row-resize;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+        }
+
+        .resize-handle .handle-bar {
+            width: 40px;
+            height: 4px;
+            border-radius: 2px;
+            background: #4b5563;
+            transition: background 0.2s;
+        }
+
+        .resize-handle:active .handle-bar {
+            background: #10b981;
+        }
+
+        .panel-container {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
     </style>
 </head>
 
@@ -176,27 +209,37 @@
     </div>
 
     <!-- Context Toggle -->
-    <details class="mb-2 border border-gray-800 rounded bg-gray-900" open>
+    <details class="mb-2 border border-gray-800 rounded bg-gray-900">
         <summary class="p-2 text-xs text-gray-400 font-bold cursor-pointer">CONTEXT / RESUME</summary>
         <textarea id="context-input" oninput="syncContext()"
             class="w-full h-24 bg-gray-800 text-white text-sm p-2 outline-none"
             placeholder="Paste resume here..."></textarea>
     </details>
 
-    <!-- Transcript Area -->
-    <div class="h-1/4 overflow-y-auto border-b border-gray-800 mb-2 p-2 text-gray-400 text-sm leading-snug"
-        id="transcript-box">
-        <p class="italic opacity-50">Conversation will appear here...</p>
+    <!-- Resizable Panel Container -->
+    <div class="panel-container">
+        <!-- Transcript Area -->
+        <div id="transcript-box"
+            class="overflow-y-auto border border-gray-800 rounded-lg p-2 text-gray-400 text-sm leading-snug"
+            style="flex: 1; min-height: 40px;">
+            <p class="italic opacity-50">Conversation will appear here...</p>
+        </div>
+
+        <!-- Drag Handle -->
+        <div class="resize-handle" id="resize-handle">
+            <div class="handle-bar"></div>
+        </div>
+
+        <!-- Answer Area -->
+        <div id="answer-box"
+            class="overflow-y-auto bg-gray-900 rounded-lg p-4 border border-gray-700 shadow-lg shadow-emerald-900/20 transition-colors duration-300"
+            style="flex: 2; min-height: 40px;">
+            <p class="text-gray-500 text-center mt-10">Select a mode to begin.</p>
+        </div>
     </div>
 
-    <!-- Answer Area -->
-    <div class="flex-grow overflow-y-auto bg-gray-900 rounded-lg p-4 mb-4 border border-gray-700 shadow-lg shadow-emerald-900/20 transition-all duration-300"
-        id="answer-box">
-        <p class="text-gray-500 text-center mt-10">Select a mode to begin.</p>
-    </div>
-
-    <!-- Hidden file input for image capture -->
-    <input type="file" id="image-input" accept="image/*" capture="environment" class="hidden">
+    <!-- Hidden file input for image capture + upload (no capture attr = OS shows both camera & gallery) -->
+    <input type="file" id="image-input" accept="image/*" multiple class="hidden">
 
     <!-- Snap Queue Bar (hidden by default) -->
     <div id="snap-bar" class="snap-bar hidden">
@@ -210,7 +253,7 @@
     </div>
 
     <!-- CONTROLS -->
-    <div class="h-20">
+    <div class="h-20 mt-2">
         <div id="controls-manual" class="grid grid-cols-3 gap-2 h-full">
             <button id="btn-manual-mic" onclick="toggleMic()"
                 class="bg-gray-700 rounded-lg flex flex-col items-center justify-center btn-action">
@@ -226,7 +269,7 @@
                 class="relative bg-purple-600 active:bg-purple-500 text-white rounded-lg flex flex-col items-center justify-center btn-action shadow-lg">
                 <span id="snap-badge-manual" class="snap-badge hidden">0</span>
                 <span class="text-2xl">📷</span>
-                <span class="text-xs font-bold mt-1">SNAP</span>
+                <span class="text-xs font-bold mt-1">IMAGE</span>
             </button>
         </div>
 
@@ -332,10 +375,6 @@
         // --- MULTI-IMAGE CAPTURE ---
         let snapQueue = [];
 
-        function captureImage() {
-            document.getElementById('image-input').click();
-        }
-
         function updateSnapUI() {
             const count = snapQueue.length;
             const bar = document.getElementById('snap-bar');
@@ -371,19 +410,24 @@
             updateSnapUI();
         }
 
-        document.getElementById('image-input').addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+        function captureImage() {
+            document.getElementById('image-input').click();
+        }
 
-            const reader = new FileReader();
-            reader.onload = () => {
-                const b64 = reader.result.split(',')[1];
-                snapQueue.push(b64);
-                updateSnapUI();
-                // If only 1 image, auto-solve immediately (quick single snap)
-                // If user wants multi, they tap SNAP again before SOLVE
-            };
-            reader.readAsDataURL(file);
+        function handleImageFiles(files) {
+            Array.from(files).forEach(file => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const b64 = reader.result.split(',')[1];
+                    snapQueue.push(b64);
+                    updateSnapUI();
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        document.getElementById('image-input').addEventListener('change', (e) => {
+            if (e.target.files.length > 0) handleImageFiles(e.target.files);
             e.target.value = '';
         });
 
@@ -590,6 +634,59 @@
             document.getElementById('answer-box').innerHTML = '<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div></div>';
             socket.emit('force_answer', { interim: latestInterimText });
         }
+
+        // --- RESIZABLE PANELS ---
+        (function initResize() {
+            const handle = document.getElementById('resize-handle');
+            const transcript = document.getElementById('transcript-box');
+            const answer = document.getElementById('answer-box');
+            const container = transcript.parentElement;
+            let isDragging = false;
+            let startY = 0;
+            let startTranscriptH = 0;
+            let startAnswerH = 0;
+
+            function getY(e) {
+                return e.touches ? e.touches[0].clientY : e.clientY;
+            }
+
+            function onStart(e) {
+                isDragging = true;
+                startY = getY(e);
+                startTranscriptH = transcript.getBoundingClientRect().height;
+                startAnswerH = answer.getBoundingClientRect().height;
+                document.body.style.userSelect = 'none';
+                document.body.style.webkitUserSelect = 'none';
+            }
+
+            function onMove(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                const dy = getY(e) - startY;
+                const totalH = startTranscriptH + startAnswerH;
+                const minH = 40;
+                let newTranscriptH = Math.max(minH, Math.min(totalH - minH, startTranscriptH + dy));
+                let newAnswerH = totalH - newTranscriptH;
+
+                transcript.style.flex = 'none';
+                transcript.style.height = newTranscriptH + 'px';
+                answer.style.flex = 'none';
+                answer.style.height = newAnswerH + 'px';
+            }
+
+            function onEnd() {
+                isDragging = false;
+                document.body.style.userSelect = '';
+                document.body.style.webkitUserSelect = '';
+            }
+
+            handle.addEventListener('mousedown', onStart);
+            handle.addEventListener('touchstart', onStart, { passive: true });
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('touchmove', onMove, { passive: false });
+            document.addEventListener('mouseup', onEnd);
+            document.addEventListener('touchend', onEnd);
+        })();
     </script>
 </body>
 
