@@ -260,7 +260,7 @@
     <!-- Resizable Panel Container -->
     <div class="panel-container">
         <!-- Transcript Area -->
-        <div id="transcript-box"
+        <div id="transcript-box" contenteditable="true"
             class="overflow-y-auto border border-gray-800 rounded-lg p-2 text-gray-400 text-sm leading-snug"
             style="flex: 1; min-height: 40px;">
             <p class="italic opacity-50">Conversation will appear here...</p>
@@ -455,7 +455,9 @@
             if (snapQueue.length === 0) return;
             const box = document.getElementById('answer-box');
             box.innerHTML = `<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-400"></div><span class="ml-3 text-purple-400">Analyzing ${snapQueue.length} image(s)...</span></div>`;
-            socket.emit('process_image', { images: snapQueue });
+            // Send transcript text so AI can use conversation context (e.g. "solve in C++")
+            const transcriptText = document.getElementById('transcript-box').innerText.trim();
+            socket.emit('process_image', { images: snapQueue, transcript: transcriptText });
             snapQueue = [];
             updateSnapUI();
         }
@@ -696,12 +698,14 @@
 
         function manualGetAnswer() {
             document.getElementById('answer-box').innerHTML = '<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div></div>';
-            socket.emit('manual_get_answer', { interim: latestInterimText });
+            const transcriptText = document.getElementById('transcript-box').innerText.trim();
+            socket.emit('manual_get_answer', { interim: latestInterimText, transcript: transcriptText });
         }
 
         function forceAnswer() {
             document.getElementById('answer-box').innerHTML = '<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div></div>';
-            socket.emit('force_answer', { interim: latestInterimText });
+            const transcriptText = document.getElementById('transcript-box').innerText.trim();
+            socket.emit('force_answer', { interim: latestInterimText, transcript: transcriptText });
         }
 
         // --- RESIZABLE PANELS ---
