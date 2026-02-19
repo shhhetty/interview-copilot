@@ -93,7 +93,7 @@ def stream_ai_answer(context, transcript_list, force=False, sid=None):
             )
 
         response = openai_client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"LIVE TRANSCRIPT:\n{formatted_transcript}"}
@@ -158,7 +158,7 @@ def stream_image_answer(images_b64, context, transcript_text='', sid=None):
             content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
 
         response = openai_client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content}
